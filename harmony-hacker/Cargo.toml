@@ -1,0 +1,20 @@
+[package]
+name = "harmony-hacker"
+version = "0.1.0"
+edition = "2021"
+authors = ["Stepan Kizim <stsiapan.kizim@gmail.com>"]
+license = "MIT OR Apache-2.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[profile.release]
+strip = true
+lto = "thin"
+
+[dependencies]
+anyhow = "1"
+symphonia = { version = "0.5.4", features = ["all"] }
+symphonia-opus = { path = "../symphonia-opus" }
+
+[dev-dependencies]
+pretty_assertions = "1"

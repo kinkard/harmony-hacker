@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use symphonia::core::codecs::DecoderOptions;
+use symphonia::core::codecs::{CodecRegistry, DecoderOptions};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::probe::Hint;
 
@@ -25,7 +25,12 @@ fn main() -> Result<()> {
         .expect("unsupported format");
     let format = probe_data.format;
 
-    let codecs = symphonia::default::get_codecs();
+    let codecs = {
+        let mut registry = CodecRegistry::new();
+        symphonia::default::register_enabled_codecs(&mut registry);
+        registry.register_all::<symphonia_opus::OpusDecoder>();
+        registry
+    };
 
     // if default track exists, try to make a decoder
     // if that fails, linear scan and take first that succeeds

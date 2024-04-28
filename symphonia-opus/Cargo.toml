@@ -1,0 +1,12 @@
+[package]
+name = "symphonia-opus"
+version = "0.1.0"
+edition = "2021"
+license = "ISC"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+audiopus = "0.3.0-rc.0"
+symphonia-core = "0.5"
+tracing = "0.1"
