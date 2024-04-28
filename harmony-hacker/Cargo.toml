@@ -15,6 +15,9 @@ lto = "thin"
 anyhow = "1"
 symphonia = { version = "0.5.4", features = ["all"] }
 symphonia-opus = { path = "../symphonia-opus" }
+rustfft = "6.2"
+realfft = "3"
+image = "0.25.1"
 
 [dev-dependencies]
 pretty_assertions = "1"
