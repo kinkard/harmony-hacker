@@ -12,6 +12,8 @@ strip = true
 lto = "thin"
 
 [dependencies]
+anyhow = "1"
+symphonia = { version = "0.5.4", features = ["all"] }
 
 [dev-dependencies]
 pretty_assertions = "1"
