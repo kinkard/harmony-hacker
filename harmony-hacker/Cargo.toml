@@ -13,11 +13,27 @@ lto = "thin"
 
 [dependencies]
 anyhow = "1"
+# todo: keep only what is really used
 symphonia = { version = "0.5.4", features = ["all"] }
 symphonia-opus = { path = "../symphonia-opus" }
 rustfft = "6.2"
 realfft = "3"
-image = "0.25.1"
+# Keep only what is really used to keep binary small and compilation fast
+bevy = { version = "0.13", default-features = false, features = [
+  "bevy_winit",
+  "bevy_core_pipeline",
+  "bevy_render",
+  "bevy_sprite",
+  "multi-threaded",
+  # Might be used in the future
+  # "bevy_audio",
+  # "bevy_text",
+  # "bevy_ui",
+  # "default_font",
+  # "wayland", # For linux support on CI
+  # "webgl2", # For wasm support
+  # "png", # For image loading
+] }
 
 [dev-dependencies]
 pretty_assertions = "1"
