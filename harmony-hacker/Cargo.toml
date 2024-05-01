@@ -13,6 +13,8 @@ lto = "thin"
 
 [dependencies]
 anyhow = "1"
+lazy_static = "1"
+tracing = "0.1"
 # todo: keep only what is really used
 symphonia = { version = "0.5.4", features = ["all"] }
 symphonia-opus = { path = "../symphonia-opus" }

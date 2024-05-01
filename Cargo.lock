@@ -1566,11 +1566,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bevy",
+ "lazy_static",
  "pretty_assertions",
  "realfft",
  "rustfft",
  "symphonia",
  "symphonia-opus",
+ "tracing",
 ]
 
 [[package]]
