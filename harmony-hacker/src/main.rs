@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use anyhow::Result;
 use bevy::{
     prelude::*,
@@ -37,6 +35,7 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(EguiPlugin)
+        .init_resource::<FftSource>()
         .init_resource::<FftConfig>()
         .add_event::<UpdateSpectrum>()
         .add_systems(Startup, (setup, setup_piano_keys))
@@ -139,9 +138,15 @@ fn setup_piano_keys(
     }
 }
 
+#[derive(Resource, Default)]
+struct FftSource {
+    name: String,
+    sample_rate: u32,
+    data: Vec<f32>,
+}
+
 #[derive(Resource)]
 struct FftConfig {
-    source: PathBuf,
     resolution_hz: f32,
     duration_sec: u32,
 }
@@ -149,7 +154,6 @@ struct FftConfig {
 impl Default for FftConfig {
     fn default() -> Self {
         Self {
-            source: PathBuf::new(),
             resolution_hz: 50.0,
             duration_sec: 90,
         }
@@ -161,7 +165,7 @@ struct UpdateSpectrum;
 
 fn file_drop(
     mut dnd_evr: EventReader<FileDragAndDrop>,
-    mut fft_config: ResMut<FftConfig>,
+    mut fft_source: ResMut<FftSource>,
     mut ev_update_spectrum: EventWriter<UpdateSpectrum>,
 ) {
     for ev in dnd_evr.read() {
@@ -170,8 +174,40 @@ fn file_drop(
             path_buf,
         } = ev
         {
-            fft_config.source = path_buf.clone();
-            ev_update_spectrum.send(UpdateSpectrum);
+            match audio::Decoder::new(path_buf) {
+                Ok(mut decoder) => {
+                    fft_source.name = path_buf
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or_default()
+                        .to_owned();
+
+                    fft_source.sample_rate = decoder.sample_rate();
+
+                    let samples_to_take = fft_source.sample_rate * 120;
+                    let mut data = Vec::with_capacity(samples_to_take as usize);
+
+                    while let Some(audio_buf) = decoder.decode() {
+                        let AudioBufferRef::F32(audio_buf) = audio_buf else {
+                            // return Err(anyhow::anyhow!("Only f32 format is currently supported"));
+                            error!("Only f32 format is currently supported");
+                            return;
+                        };
+
+                        if data.len() + audio_buf.frames() as usize > data.capacity() {
+                            break;
+                        }
+
+                        data.extend_from_slice(audio_buf.chan(0));
+                    }
+                    fft_source.data = data;
+
+                    ev_update_spectrum.send(UpdateSpectrum);
+                }
+                Err(err) => {
+                    error!("Failed to open the file {path_buf:?}: {err:?}");
+                }
+            }
         }
     }
 }
@@ -179,19 +215,14 @@ fn file_drop(
 fn egui_ui(
     mut contexts: EguiContexts,
     mut fft_config: ResMut<FftConfig>,
+    fft_source: Res<FftSource>,
     mut ev_update_spectrum: EventWriter<UpdateSpectrum>,
 ) {
     let resolution_hz = fft_config.resolution_hz;
     let duration_sec = fft_config.duration_sec;
 
     egui::Window::new("FFT Config").show(contexts.ctx_mut(), |ui| {
-        let source = fft_config
-            .source
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default();
-
-        ui.label(format!("Source: {source}"));
+        ui.label(format!("Source: {}", fft_source.name));
         ui.label("Resolution (Hz):");
         ui.add(egui::Slider::new(&mut fft_config.resolution_hz, 2.0..=50.0));
         ui.label("Duration (sec):");
@@ -205,13 +236,14 @@ fn egui_ui(
 
 fn update_spectrum(
     mut ev_update_spectrum: EventReader<UpdateSpectrum>,
+    fft_source: Res<FftSource>,
     fft_config: Res<FftConfig>,
     mut images: ResMut<Assets<Image>>,
     mut spectrum_spties: Query<&mut Handle<Image>, With<Spectrum>>,
 ) {
     for _ in ev_update_spectrum.read() {
         for mut handle in spectrum_spties.iter_mut() {
-            *handle = build_spectrum(&fft_config)
+            *handle = build_spectrum(&fft_source, &fft_config)
                 .map(|image| images.add(image))
                 .inspect_err(|err| error!("Failed to build spectrum: {:?}", err))
                 .unwrap_or_default();
@@ -219,22 +251,19 @@ fn update_spectrum(
     }
 }
 
-fn build_spectrum(config: &FftConfig) -> Result<Image> {
-    let mut decoder = audio::Decoder::new(&config.source)?;
-
-    let sample_rate = decoder.sample_rate();
-    let fft_window_size = (sample_rate as f32 / config.resolution_hz as f32) as usize;
+fn build_spectrum(source: &FftSource, config: &FftConfig) -> Result<Image> {
+    let fft_window_size = (source.sample_rate as f32 / config.resolution_hz as f32) as usize;
     info!("FFT window size: {}", fft_window_size);
 
     let mut real_planner = RealFftPlanner::<f32>::new();
     let r2c = real_planner.plan_fft_forward(fft_window_size);
-    let mut input_buf = Vec::<f32>::with_capacity(fft_window_size);
+    // let mut input_buf = Vec::<f32>::with_capacity(fft_window_size);
+    let mut input_buf = r2c.make_input_vec();
     let mut output_buf = r2c.make_output_vec();
 
     // image related stuff
-    let bins_to_take = 1 + (MAX_FREQ / sample_rate as f32 * fft_window_size as f32) as u32;
-    // todo: deduce from the duration of the audio file
-    let spectrum_rows = sample_rate * config.duration_sec / fft_window_size as u32;
+    let bins_to_take = 1 + (MAX_FREQ / source.sample_rate as f32 * fft_window_size as f32) as u32;
+    let spectrum_rows = source.sample_rate * config.duration_sec / fft_window_size as u32;
     let size = Extent3d {
         width: bins_to_take,
         height: spectrum_rows,
@@ -255,39 +284,20 @@ fn build_spectrum(config: &FftConfig) -> Result<Image> {
         ..default()
     };
 
-    // progress related stuff
-    let mut curr_row_idx = 0;
-    let max_magnitude: f32 = 2.5;
+    for row in 0..spectrum_rows as usize {
+        let start = row * fft_window_size;
+        if start + fft_window_size > source.data.len() {
+            break;
+        }
+        input_buf.copy_from_slice(&source.data[start..start + fft_window_size]);
 
-    while let Some(audio_buf) = decoder.decode() {
-        let AudioBufferRef::F32(audio_buf) = audio_buf else {
-            return Err(anyhow::anyhow!("Only f32 format is currently supported"));
-        };
-
-        let input_buf_space = input_buf.capacity() - input_buf.len();
-        if audio_buf.frames() < input_buf_space {
-            input_buf.extend_from_slice(audio_buf.chan(0));
-        } else {
-            input_buf.extend_from_slice(&audio_buf.chan(0)[..input_buf_space]);
-
-            r2c.process(&mut input_buf, &mut output_buf).unwrap();
-            for value in output_buf.iter().take(bins_to_take as usize) {
-                let s = value.norm();
-                let s = s.max(1e-10); // Avoid taking the logarithm of zero
-                let s = s.log10(); // Take the logarithm
-                let s = (s / max_magnitude * 255.0) as u8;
-
-                image.data.push(s);
-            }
-
-            curr_row_idx += 1;
-            // no need to process more
-            if curr_row_idx == spectrum_rows {
-                break;
-            }
-            // And now take the rest of the audio_buf
-            input_buf.clear();
-            input_buf.extend_from_slice(&audio_buf.chan(0)[input_buf_space..]);
+        r2c.process(&mut input_buf, &mut output_buf).unwrap();
+        for value in output_buf.iter().take(bins_to_take as usize) {
+            let s = value.norm();
+            let s = s.max(1e-10); // Avoid taking the logarithm of zero
+            let s = (s.log10() / 3.0).min(1.0); // convert to 0..60db range in 0..1
+            let s = (s * 255.0) as u8;
+            image.data.push(s);
         }
     }
 
