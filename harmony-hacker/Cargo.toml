@@ -36,6 +36,7 @@ bevy = { version = "0.13", default-features = false, features = [
   # "webgl2", # For wasm support
   # "png", # For image loading
 ] }
+bevy_egui = "0.27"
 
 [dev-dependencies]
 pretty_assertions = "1"

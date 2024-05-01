@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use bevy::{
@@ -9,6 +9,7 @@ use bevy::{
     sprite::MaterialMesh2dBundle,
     window::PrimaryWindow,
 };
+use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use realfft::RealFftPlanner;
 use symphonia::core::audio::{AudioBufferRef, Signal};
 
@@ -35,8 +36,11 @@ const _MIN_FREQ: f32 = 27.5000;
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugins(EguiPlugin)
+        .init_resource::<FftConfig>()
+        .add_event::<UpdateSpectrum>()
         .add_systems(Startup, (setup, setup_piano_keys))
-        .add_systems(Update, file_drop)
+        .add_systems(Update, (file_drop, egui_ui, update_spectrum))
         .run();
 }
 
@@ -128,10 +132,30 @@ fn setup_piano_keys(
     }
 }
 
+#[derive(Resource)]
+struct FftConfig {
+    source: PathBuf,
+    resolution_hz: u32,
+    duration_sec: u32,
+}
+
+impl Default for FftConfig {
+    fn default() -> Self {
+        Self {
+            source: PathBuf::new(),
+            resolution_hz: 50,
+            duration_sec: 90,
+        }
+    }
+}
+
+#[derive(Event)]
+struct UpdateSpectrum;
+
 fn file_drop(
     mut dnd_evr: EventReader<FileDragAndDrop>,
-    mut spectrum_spties: Query<&mut Handle<Image>, With<Spectrum>>,
-    mut images: ResMut<Assets<Image>>,
+    mut fft_config: ResMut<FftConfig>,
+    mut ev_update_spectrum: EventWriter<UpdateSpectrum>,
 ) {
     for ev in dnd_evr.read() {
         if let FileDragAndDrop::DroppedFile {
@@ -139,31 +163,78 @@ fn file_drop(
             path_buf,
         } = ev
         {
-            // todo: move it into a background task
-            let spectrum = build_spectrum(&path_buf).unwrap();
-            *spectrum_spties.single_mut() = images.add(spectrum);
+            fft_config.source = path_buf.clone();
+            ev_update_spectrum.send(UpdateSpectrum);
         }
     }
 }
 
-fn build_spectrum(path: &Path) -> Result<Image> {
+fn egui_ui(
+    mut contexts: EguiContexts,
+    mut fft_config: ResMut<FftConfig>,
+    mut ev_update_spectrum: EventWriter<UpdateSpectrum>,
+) {
+    let resolution_hz = fft_config.resolution_hz;
+    let duration_sec = fft_config.duration_sec;
+
+    egui::Window::new("FFT Config").show(contexts.ctx_mut(), |ui| {
+        let source = fft_config
+            .source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+
+        ui.label(format!("Source: {source}"));
+        ui.label("Resolution (Hz):");
+        ui.add(egui::Slider::new(&mut fft_config.resolution_hz, 1..=50));
+        ui.label("Duration (sec):");
+        ui.add(egui::Slider::new(&mut fft_config.duration_sec, 1..=120));
+    });
+
+    if resolution_hz != fft_config.resolution_hz || duration_sec != fft_config.duration_sec {
+        ev_update_spectrum.send(UpdateSpectrum);
+    }
+}
+
+fn update_spectrum(
+    mut ev_update_spectrum: EventReader<UpdateSpectrum>,
+    fft_config: Res<FftConfig>,
+    mut images: ResMut<Assets<Image>>,
+    mut spectrum_spties: Query<&mut Handle<Image>, With<Spectrum>>,
+) {
+    for _ in ev_update_spectrum.read() {
+        for mut handle in spectrum_spties.iter_mut() {
+            *handle = build_spectrum(
+                &fft_config.source,
+                fft_config.resolution_hz,
+                fft_config.duration_sec,
+            )
+            .map(|image| images.add(image))
+            .unwrap_or_default();
+        }
+    }
+}
+
+fn build_spectrum(
+    path: &Path,
+    desired_resolution_hz: u32,
+    desired_duration_sec: u32,
+) -> Result<Image> {
     let mut decoder = audio::Decoder::new(path)?;
 
-    let desired_resolution_hz = 5;
     let sample_rate = decoder.sample_rate();
-    let number_of_samples = sample_rate as usize / desired_resolution_hz;
+    let fft_window_size = sample_rate as usize / desired_resolution_hz as usize;
 
     let mut real_planner = RealFftPlanner::<f32>::new();
-    let r2c = real_planner.plan_fft_forward(number_of_samples);
-    let mut input_buf = Vec::<f32>::with_capacity(number_of_samples);
+    let r2c = real_planner.plan_fft_forward(fft_window_size);
+    let mut input_buf = Vec::<f32>::with_capacity(fft_window_size);
     let mut output_buf = r2c.make_output_vec();
 
     // image related stuff
-    let bins_to_take = 1 + (MAX_FREQ / sample_rate as f32 * number_of_samples as f32) as u32;
+    let bins_to_take = 1 + (MAX_FREQ / sample_rate as f32 * fft_window_size as f32) as u32;
     // todo: deduce from the duration of the audio file
-    let spectrum_rows = 500;
+    let spectrum_rows = sample_rate * desired_duration_sec / fft_window_size as u32;
     let size = Extent3d {
-        // width: audio_buf.frames() as u32 / 2 + 1,
         width: bins_to_take,
         height: spectrum_rows,
         ..default()
