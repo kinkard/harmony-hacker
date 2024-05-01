@@ -61,6 +61,11 @@ impl Decoder {
         })
     }
 
+    /// The sample rate of the audio in Hz.
+    pub(crate) fn sample_rate(&self) -> u32 {
+        self.decoder.codec_params().sample_rate.unwrap()
+    }
+
     pub(crate) fn decode(&mut self) -> Option<AudioBufferRef> {
         loop {
             let Ok(packet) = self.format.next_packet() else {

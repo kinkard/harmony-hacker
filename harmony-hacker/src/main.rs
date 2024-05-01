@@ -10,7 +10,7 @@ use bevy::{
     window::PrimaryWindow,
 };
 use realfft::RealFftPlanner;
-use symphonia::core::audio::SampleBuffer;
+use symphonia::core::audio::{AudioBufferRef, Signal};
 
 mod audio;
 
@@ -147,84 +147,77 @@ fn file_drop(
 }
 
 fn build_spectrum(path: &Path) -> Result<Image> {
-    let mut sample_buf = None;
+    let mut decoder = audio::Decoder::new(path)?;
 
-    // FFT related stuff
+    let desired_resolution_hz = 5;
+    let sample_rate = decoder.sample_rate();
+    let number_of_samples = sample_rate as usize / desired_resolution_hz;
+
     let mut real_planner = RealFftPlanner::<f32>::new();
-    let r2c = real_planner.plan_fft_forward(960);
-    let mut spectrum = r2c.make_output_vec();
+    let r2c = real_planner.plan_fft_forward(number_of_samples);
+    let mut input_buf = Vec::<f32>::with_capacity(number_of_samples);
+    let mut output_buf = r2c.make_output_vec();
 
-    let mut spectrum_image = None;
-    let frames_to_analyze = 3000;
-    let mut curr_frame_idx = 0;
+    // image related stuff
+    let bins_to_take = 1 + (MAX_FREQ / sample_rate as f32 * number_of_samples as f32) as u32;
+    // todo: deduce from the duration of the audio file
+    let spectrum_rows = 500;
+    let size = Extent3d {
+        // width: audio_buf.frames() as u32 / 2 + 1,
+        width: bins_to_take,
+        height: spectrum_rows,
+        ..default()
+    };
+    let mut image = Image {
+        data: Vec::with_capacity(size.width as usize * size.height as usize),
+        texture_descriptor: TextureDescriptor {
+            label: None,
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::R8Unorm,
+            usage: TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        ..default()
+    };
 
+    // progress related stuff
+    let mut curr_row_idx = 0;
     let max_magnitude: f32 = 2.5;
 
-    let mut decoder = audio::Decoder::new(path)?;
     while let Some(audio_buf) = decoder.decode() {
-        // If this is the *first* decoded packet, create a sample buffer matching the
-        // decoded audio buffer format.
-        if sample_buf.is_none() {
-            let spec = *audio_buf.spec();
-            let duration = audio_buf.capacity() as u64;
+        let AudioBufferRef::F32(audio_buf) = audio_buf else {
+            return Err(anyhow::anyhow!("Only f32 format is currently supported"));
+        };
 
-            sample_buf = Some(SampleBuffer::<f32>::new(duration, spec));
+        let input_buf_space = input_buf.capacity() - input_buf.len();
+        if audio_buf.frames() < input_buf_space {
+            input_buf.extend_from_slice(audio_buf.chan(0));
+        } else {
+            input_buf.extend_from_slice(&audio_buf.chan(0)[..input_buf_space]);
 
-            // Take only bins that are less than MAX_FREQ
-            let bins_to_take = 1 + (MAX_FREQ / spec.rate as f32 * audio_buf.frames() as f32) as u32;
-
-            let size = Extent3d {
-                // width: audio_buf.frames() as u32 / 2 + 1,
-                width: bins_to_take,
-                height: frames_to_analyze,
-                ..default()
-            };
-
-            let image = Image {
-                data: Vec::with_capacity(size.width as usize * size.height as usize),
-                texture_descriptor: TextureDescriptor {
-                    label: None,
-                    size,
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: TextureDimension::D2,
-                    format: TextureFormat::R8Unorm,
-                    usage: TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                },
-                ..default()
-            };
-            spectrum_image = Some(image);
-        }
-
-        // Copy the decoded audio buffer into the sample buffer in an interleaved format.
-        if let Some(buf) = &mut sample_buf {
-            let frames = audio_buf.frames();
-            let bins_to_take =
-                1 + (MAX_FREQ / audio_buf.spec().rate as f32 * frames as f32) as usize;
-
-            // actually this is redundant as audio_buf is already in f32 planar format
-            // todo: process fft by chunks that allow to achieve the desired resolution
-            buf.copy_planar_ref(audio_buf);
-            r2c.process(&mut buf.samples_mut()[..frames], &mut spectrum)
-                .unwrap();
-
-            for value in spectrum.iter().take(bins_to_take) {
+            r2c.process(&mut input_buf, &mut output_buf).unwrap();
+            for value in output_buf.iter().take(bins_to_take as usize) {
                 let s = value.norm();
                 let s = s.max(1e-10); // Avoid taking the logarithm of zero
                 let s = s.log10(); // Take the logarithm
                 let s = (s / max_magnitude * 255.0) as u8;
 
-                spectrum_image.as_mut().unwrap().data.push(s);
+                image.data.push(s);
             }
 
-            curr_frame_idx += 1;
+            curr_row_idx += 1;
             // no need to process more
-            if curr_frame_idx == frames_to_analyze {
+            if curr_row_idx == spectrum_rows {
                 break;
             }
+            // And now take the rest of the audio_buf
+            input_buf.clear();
+            input_buf.extend_from_slice(&audio_buf.chan(0)[input_buf_space..]);
         }
     }
 
-    Ok(spectrum_image.unwrap())
+    Ok(image)
 }
