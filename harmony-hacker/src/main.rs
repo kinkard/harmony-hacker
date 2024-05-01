@@ -213,6 +213,7 @@ fn update_spectrum(
         for mut handle in spectrum_spties.iter_mut() {
             *handle = build_spectrum(&fft_config)
                 .map(|image| images.add(image))
+                .inspect_err(|err| error!("Failed to build spectrum: {:?}", err))
                 .unwrap_or_default();
         }
     }
