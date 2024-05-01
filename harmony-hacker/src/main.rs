@@ -92,6 +92,7 @@ fn setup_piano_keys(
         .id();
 
     let white_key_shape = meshes.add(Rectangle::from_size(WHITE_KEY_SIZE));
+    let white_key_material = materials.add(Color::WHITE);
 
     let mut key_pos = -KEYBOARD_SIZE.x / 2.0 + WHITE_KEY_SIZE.x / 2.0;
     let white_key_step = WHITE_KEY_SIZE.x + WHITE_KEYS_SPACE;
@@ -100,7 +101,7 @@ fn setup_piano_keys(
             .spawn(MaterialMesh2dBundle {
                 mesh: white_key_shape.clone().into(),
                 transform: Transform::from_translation(Vec3::new(key_pos, 0.0, 0.0)),
-                material: materials.add(Color::WHITE),
+                material: white_key_material.clone(),
                 ..default()
             })
             .set_parent(keyboard);
@@ -114,6 +115,7 @@ fn setup_piano_keys(
         false, true, false, true, false, false, true, false, true, false, true, false,
     ];
     let black_key_shape = meshes.add(Rectangle::from_size(BLACK_KEY_SIZE));
+    let black_key_material = materials.add(Color::BLACK);
 
     // Octaves have a slight offset by 2 white keys where sub-contra octave lives,
     // which we achieve by offsetting the iteration over mask.
@@ -130,7 +132,7 @@ fn setup_piano_keys(
                         // Draw black keys on top of the white
                         1.0,
                     )),
-                    material: materials.add(Color::BLACK),
+                    material: black_key_material.clone(),
                     ..default()
                 })
                 .set_parent(keyboard);
