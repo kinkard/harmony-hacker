@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Result;
 use bevy::{
@@ -142,7 +142,7 @@ fn setup_piano_keys(
 #[derive(Resource)]
 struct FftConfig {
     source: PathBuf,
-    resolution_hz: u32,
+    resolution_hz: f32,
     duration_sec: u32,
 }
 
@@ -150,7 +150,7 @@ impl Default for FftConfig {
     fn default() -> Self {
         Self {
             source: PathBuf::new(),
-            resolution_hz: 50,
+            resolution_hz: 50.0,
             duration_sec: 90,
         }
     }
@@ -193,7 +193,7 @@ fn egui_ui(
 
         ui.label(format!("Source: {source}"));
         ui.label("Resolution (Hz):");
-        ui.add(egui::Slider::new(&mut fft_config.resolution_hz, 1..=50));
+        ui.add(egui::Slider::new(&mut fft_config.resolution_hz, 2.0..=50.0));
         ui.label("Duration (sec):");
         ui.add(egui::Slider::new(&mut fft_config.duration_sec, 1..=120));
     });
@@ -211,26 +211,19 @@ fn update_spectrum(
 ) {
     for _ in ev_update_spectrum.read() {
         for mut handle in spectrum_spties.iter_mut() {
-            *handle = build_spectrum(
-                &fft_config.source,
-                fft_config.resolution_hz,
-                fft_config.duration_sec,
-            )
-            .map(|image| images.add(image))
-            .unwrap_or_default();
+            *handle = build_spectrum(&fft_config)
+                .map(|image| images.add(image))
+                .unwrap_or_default();
         }
     }
 }
 
-fn build_spectrum(
-    path: &Path,
-    desired_resolution_hz: u32,
-    desired_duration_sec: u32,
-) -> Result<Image> {
-    let mut decoder = audio::Decoder::new(path)?;
+fn build_spectrum(config: &FftConfig) -> Result<Image> {
+    let mut decoder = audio::Decoder::new(&config.source)?;
 
     let sample_rate = decoder.sample_rate();
-    let fft_window_size = sample_rate as usize / desired_resolution_hz as usize;
+    let fft_window_size = (sample_rate as f32 / config.resolution_hz as f32) as usize;
+    info!("FFT window size: {}", fft_window_size);
 
     let mut real_planner = RealFftPlanner::<f32>::new();
     let r2c = real_planner.plan_fft_forward(fft_window_size);
@@ -240,7 +233,7 @@ fn build_spectrum(
     // image related stuff
     let bins_to_take = 1 + (MAX_FREQ / sample_rate as f32 * fft_window_size as f32) as u32;
     // todo: deduce from the duration of the audio file
-    let spectrum_rows = sample_rate * desired_duration_sec / fft_window_size as u32;
+    let spectrum_rows = sample_rate * config.duration_sec / fft_window_size as u32;
     let size = Extent3d {
         width: bins_to_take,
         height: spectrum_rows,
