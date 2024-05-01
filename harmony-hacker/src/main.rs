@@ -53,11 +53,18 @@ fn setup(mut commands: Commands, windows: Query<&Window, With<PrimaryWindow>>) {
     let window_height = windows.single().height();
     commands
         .spawn(SpriteBundle {
-            transform: Transform::from_translation(Vec3::new(0.0, 1.0 + KEYBOARD_SIZE.y, 0.0)),
+            transform: Transform::from_translation(Vec3::new(
+                0.0,
+                0.5 + KEYBOARD_SIZE.y / 2.0,
+                0.0,
+            )),
             sprite: Sprite {
                 flip_y: true,
                 // todo: fix the size of the spectrum
-                custom_size: Some(Vec2::new(KEYBOARD_SIZE.x, window_height)),
+                custom_size: Some(Vec2::new(
+                    KEYBOARD_SIZE.x,
+                    window_height - KEYBOARD_SIZE.y - 1.0,
+                )),
                 ..Default::default()
             },
             ..Default::default()
@@ -289,6 +296,9 @@ fn build_spectrum(
             input_buf.extend_from_slice(&audio_buf.chan(0)[input_buf_space..]);
         }
     }
+
+    // Fill the rest of the image with zeros
+    image.data.resize(image.data.capacity(), 0);
 
     Ok(image)
 }
