@@ -37,9 +37,19 @@ fn main() {
         .add_plugins(EguiPlugin)
         .init_resource::<FftSource>()
         .init_resource::<FftConfig>()
+        .add_event::<PlayNote>()
         .add_event::<UpdateSpectrum>()
         .add_systems(Startup, (setup, setup_piano_keys))
-        .add_systems(Update, (file_drop, egui_ui, update_spectrum))
+        .add_systems(
+            Update,
+            (
+                file_drop,
+                egui_ui,
+                update_spectrum,
+                piano_keyboard,
+                play_note,
+            ),
+        )
         .run();
 }
 
@@ -71,6 +81,9 @@ fn setup(mut commands: Commands, windows: Query<&Window, With<PrimaryWindow>>) {
         .insert(Spectrum);
 }
 
+#[derive(Component)]
+struct Keyboard;
+
 fn setup_piano_keys(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -88,6 +101,7 @@ fn setup_piano_keys(
                 0.0,
             ),
         )))
+        .insert(Keyboard)
         .insert(Name::new("Keyboard"))
         .id();
 
@@ -111,7 +125,7 @@ fn setup_piano_keys(
     // For black keys we split the octave (7 white keys) into 12 slots and fill them according to the mask
     // https://bootcamp.uxdesign.cc/drawing-a-flat-piano-keyboard-in-illustrator-de07c74a64c6
     let slot_size = white_key_step * 7.0 / 12.0;
-    let mask = [
+    let octave_mask_black = [
         false, true, false, true, false, false, true, false, true, false, true, false,
     ];
     let black_key_shape = meshes.add(Rectangle::from_size(BLACK_KEY_SIZE));
@@ -121,7 +135,8 @@ fn setup_piano_keys(
     // which we achieve by offsetting the iteration over mask.
     let start_pos = 2.0 * white_key_step - KEYBOARD_SIZE.x / 2.0 + slot_size / 2.0;
     for i in -3..83 {
-        if mask[(mask.len() as isize + i) as usize % mask.len()] {
+        let octave_key = (octave_mask_black.len() as isize + i) as usize % octave_mask_black.len();
+        if octave_mask_black[octave_key] {
             commands
                 .spawn(MaterialMesh2dBundle {
                     mesh: black_key_shape.clone().into(),
@@ -140,11 +155,91 @@ fn setup_piano_keys(
     }
 }
 
-#[derive(Resource, Default)]
+#[derive(Event)]
+struct PlayNote {
+    key: u8,
+}
+
+fn piano_keyboard(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mouse_button_input: Res<ButtonInput<MouseButton>>,
+    keyboard: Query<&Transform, With<Keyboard>>,
+    mut ev_play_note: EventWriter<PlayNote>,
+) {
+    if mouse_button_input.just_pressed(MouseButton::Left) {
+        let window = windows.single();
+        if let Some(cursor_pos) = window.cursor_position() {
+            // Transform from (0,0) in top right corner to the world coordinates with (0,0) in the center
+            let cursor_pos = Vec2::new(
+                cursor_pos.x - window.width() / 2.0,
+                window.height() / 2.0 - cursor_pos.y,
+            );
+
+            // Check if the cursor is in the keyboard
+            for transform in keyboard.iter() {
+                let cursor_pos = cursor_pos - transform.translation.xy();
+                if cursor_pos.x.abs() < KEYBOARD_SIZE.x / 2.0
+                    && cursor_pos.y.abs() < KEYBOARD_SIZE.y / 2.0
+                {
+                    let white_key_idx = ((cursor_pos.x + KEYBOARD_SIZE.x / 2.0)
+                        / (WHITE_KEY_SIZE.x + WHITE_KEYS_SPACE))
+                        as usize;
+
+                    let white_keys_map = [
+                        0, 2, 3, 5, 7, 8, 10, 12, 14, 15, 17, 19, 20, 22, 24, 26, 27, 29, 31, 32,
+                        34, 36, 38, 39, 41, 43, 44, 46, 48, 50, 51, 53, 55, 56, 58, 60, 62, 63, 65,
+                        67, 68, 70, 72, 74, 75, 77, 79, 80, 82, 84, 86, 87,
+                    ];
+                    ev_play_note.send(PlayNote {
+                        key: white_keys_map[white_key_idx],
+                    });
+                }
+            }
+
+            // todo: update frequency on key press
+        }
+    }
+}
+
+fn play_note(
+    mut ev_play_note: EventReader<PlayNote>,
+    mut fft_source: ResMut<FftSource>,
+    mut ev_update_spectrum: EventWriter<UpdateSpectrum>,
+) {
+    for ev in ev_play_note.read() {
+        // The key number 49 (48 with zero-based index) is the A4 key with 440 Hz frequency
+        let freq = 440.0 * 2.0f64.powf((ev.key as f64 - 48.0) / 12.0);
+        info!("Playing note: {} with frequency: {}", ev.key, freq);
+
+        fft_source.name = format!("Note: {freq:.2} Hz");
+        fft_source.sample_rate = 48000;
+
+        // Reuse the buffer for the new data
+        let samples_to_take = fft_source.sample_rate as usize * 120;
+        fft_source.data.resize(samples_to_take, 0.0);
+        for (i, sample) in fft_source.data.iter_mut().enumerate() {
+            *sample = (i as f64 * freq * 2.0 * std::f64::consts::PI / 48000.0).sin() as f32;
+        }
+
+        ev_update_spectrum.send(UpdateSpectrum);
+    }
+}
+
+#[derive(Resource)]
 struct FftSource {
     name: String,
     sample_rate: u32,
     data: Vec<f32>,
+}
+
+impl Default for FftSource {
+    fn default() -> Self {
+        Self {
+            name: Default::default(),
+            sample_rate: 48000,
+            data: Vec::with_capacity(48000 * 120),
+        }
+    }
 }
 
 #[derive(Resource)]
@@ -186,8 +281,10 @@ fn file_drop(
 
                     fft_source.sample_rate = decoder.sample_rate();
 
-                    let samples_to_take = fft_source.sample_rate * 120;
-                    let mut data = Vec::with_capacity(samples_to_take as usize);
+                    // take first 2m of the audio
+                    let samples_to_take = fft_source.sample_rate as usize * 120;
+                    fft_source.data.clear();
+                    fft_source.data.reserve(samples_to_take);
 
                     while let Some(audio_buf) = decoder.decode() {
                         let AudioBufferRef::F32(audio_buf) = audio_buf else {
@@ -196,13 +293,12 @@ fn file_drop(
                             return;
                         };
 
-                        if data.len() + audio_buf.frames() as usize > data.capacity() {
+                        if fft_source.data.len() + audio_buf.frames() as usize > samples_to_take {
                             break;
                         }
 
-                        data.extend_from_slice(audio_buf.chan(0));
+                        fft_source.data.extend_from_slice(audio_buf.chan(0));
                     }
-                    fft_source.data = data;
 
                     ev_update_spectrum.send(UpdateSpectrum);
                 }
@@ -226,7 +322,7 @@ fn egui_ui(
     egui::Window::new("FFT Config").show(contexts.ctx_mut(), |ui| {
         ui.label(format!("Source: {}", fft_source.name));
         ui.label("Resolution (Hz):");
-        ui.add(egui::Slider::new(&mut fft_config.resolution_hz, 2.0..=50.0));
+        ui.add(egui::Slider::new(&mut fft_config.resolution_hz, 1.0..=50.0));
         ui.label("Duration (sec):");
         ui.add(egui::Slider::new(&mut fft_config.duration_sec, 1..=120));
     });
