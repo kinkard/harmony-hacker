@@ -382,6 +382,7 @@ fn build_spectrum(source: &FftSource, config: &FftConfig) -> Result<Image> {
     // let mut input_buf = Vec::<f32>::with_capacity(fft_window_size);
     let mut input_buf = r2c.make_input_vec();
     let mut output_buf = r2c.make_output_vec();
+    let mut scratch_buf = r2c.make_scratch_vec();
 
     // image related stuff
     let bins_to_take = 1 + (MAX_FREQ / source.sample_rate as f32 * fft_window_size as f32) as u32;
@@ -413,7 +414,8 @@ fn build_spectrum(source: &FftSource, config: &FftConfig) -> Result<Image> {
         }
         input_buf.copy_from_slice(&source.data[start..start + fft_window_size]);
 
-        r2c.process(&mut input_buf, &mut output_buf).unwrap();
+        r2c.process_with_scratch(&mut input_buf, &mut output_buf, &mut scratch_buf)
+            .unwrap();
         for value in output_buf.iter().take(bins_to_take as usize) {
             let s = value.norm();
             let s = s.max(1e-10); // Avoid taking the logarithm of zero
