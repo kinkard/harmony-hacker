@@ -273,10 +273,11 @@ enum Algorithm {
     Goertzel,
 }
 
-#[derive(Resource)]
+#[derive(Clone, PartialEq, Resource)]
 struct FftConfig {
     resolution_hz: f32,
     duration_sec: u32,
+    offset_sec: u32,
     algorithm: Algorithm,
 }
 
@@ -285,7 +286,8 @@ impl Default for FftConfig {
         Self {
             resolution_hz: 50.0,
             duration_sec: 90,
-            algorithm: Algorithm::Fft,
+            offset_sec: 0,
+            algorithm: Algorithm::Goertzel,
         }
     }
 }
@@ -349,9 +351,7 @@ fn egui_ui(
     fft_source: Res<FftSource>,
     mut ev_update_spectrum: EventWriter<UpdateSpectrum>,
 ) {
-    let resolution_hz = fft_config.resolution_hz;
-    let duration_sec = fft_config.duration_sec;
-    let algorithm = fft_config.algorithm;
+    let prev = fft_config.clone();
 
     egui::Window::new("FFT Config").show(contexts.ctx_mut(), |ui| {
         ui.label(format!("Source: {}", fft_source.name));
@@ -359,15 +359,14 @@ fn egui_ui(
         ui.add(egui::Slider::new(&mut fft_config.resolution_hz, 1.0..=50.0));
         ui.label("Duration (sec):");
         ui.add(egui::Slider::new(&mut fft_config.duration_sec, 1..=120));
+        ui.label("Offset (sec):");
+        ui.add(egui::Slider::new(&mut fft_config.offset_sec, 0..=90));
         ui.label("Algorithm:");
         ui.radio_value(&mut fft_config.algorithm, Algorithm::Fft, "FFT");
         ui.radio_value(&mut fft_config.algorithm, Algorithm::Goertzel, "Goertzel");
     });
 
-    if resolution_hz != fft_config.resolution_hz
-        || duration_sec != fft_config.duration_sec
-        || algorithm != fft_config.algorithm
-    {
+    if prev != *fft_config {
         ev_update_spectrum.send(UpdateSpectrum);
     }
 }
@@ -426,12 +425,13 @@ fn build_spectrum_fft(source: &FftSource, config: &FftConfig) -> Result<Image> {
         ..default()
     };
 
+    let samples = &source.data[config.offset_sec as usize * source.sample_rate as usize..];
     for row in 0..spectrum_rows as usize {
         let start = row * fft_window_size;
-        if start + fft_window_size > source.data.len() {
+        if start + fft_window_size > samples.len() {
             break;
         }
-        input_buf.copy_from_slice(&source.data[start..start + fft_window_size]);
+        input_buf.copy_from_slice(&samples[start..start + fft_window_size]);
 
         r2c.process_with_scratch(&mut input_buf, &mut output_buf, &mut scratch_buf)
             .unwrap();
@@ -481,7 +481,8 @@ fn build_spectrum_goertzel(source: &FftSource, config: &FftConfig) -> Result<Ima
         .map(|key| 440.0 * 2.0f64.powf((key as f64 - 48.0) / 12.0) as f32)
         .map(|frequency| goertzel::Goertzel::new(source.sample_rate, frequency))
         .collect::<Vec<_>>();
-    for chunk in source.data.chunks(window_size).take(spectrum_rows as usize) {
+    let samples = &source.data[config.offset_sec as usize * source.sample_rate as usize..];
+    for chunk in samples.chunks(window_size).take(spectrum_rows as usize) {
         for sample in chunk {
             for state in key_states.iter_mut() {
                 state.process(*sample)
