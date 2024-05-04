@@ -15,17 +15,27 @@ mod audio;
 
 /// White key dimensions
 const WHITE_KEY_SIZE: Vec2 = Vec2 { x: 23.0, y: 135.0 };
-/// Black key dimensions
-const BLACK_KEY_SIZE: Vec2 = Vec2 { x: 14.0, y: 90.0 };
 /// The space between white keys
 const WHITE_KEYS_SPACE: f32 = 1.0;
+/// The distance between two white keys centers
+const WHITE_KEYS_STEP: f32 = WHITE_KEY_SIZE.x + WHITE_KEYS_SPACE;
 /// Number of the white keys in the keyboard
 const WHITE_KEYS_COUNT: usize = 52;
+
+// 12 keys fit the octave, 7 white and 5 black
+const BLACK_KEYS_SLOT_SIZE: f32 = WHITE_KEYS_STEP * 7.0 / 12.0;
+/// Black key dimensions
+const BLACK_KEY_SIZE: Vec2 = Vec2 {
+    x: BLACK_KEYS_SLOT_SIZE,
+    y: 90.0,
+};
+
 /// The size of the keyboard
 const KEYBOARD_SIZE: Vec2 = Vec2 {
     x: WHITE_KEY_SIZE.x + (WHITE_KEYS_COUNT - 1) as f32 * (WHITE_KEY_SIZE.x + WHITE_KEYS_SPACE),
     y: WHITE_KEY_SIZE.y,
 };
+
 /// The frequency of the highest note in the piano, C8
 const MAX_FREQ: f32 = 4186.01;
 /// The frequency of the lowest note in the piano, A0
@@ -109,7 +119,6 @@ fn setup_piano_keys(
     let white_key_material = materials.add(Color::WHITE);
 
     let mut key_pos = -KEYBOARD_SIZE.x / 2.0 + WHITE_KEY_SIZE.x / 2.0;
-    let white_key_step = WHITE_KEY_SIZE.x + WHITE_KEYS_SPACE;
     for _ in 0..WHITE_KEYS_COUNT {
         commands
             .spawn(MaterialMesh2dBundle {
@@ -119,12 +128,11 @@ fn setup_piano_keys(
                 ..default()
             })
             .set_parent(keyboard);
-        key_pos += white_key_step;
+        key_pos += WHITE_KEYS_STEP;
     }
 
     // For black keys we split the octave (7 white keys) into 12 slots and fill them according to the mask
     // https://bootcamp.uxdesign.cc/drawing-a-flat-piano-keyboard-in-illustrator-de07c74a64c6
-    let slot_size = white_key_step * 7.0 / 12.0;
     let octave_mask_black = [
         false, true, false, true, false, false, true, false, true, false, true, false,
     ];
@@ -133,7 +141,7 @@ fn setup_piano_keys(
 
     // Octaves have a slight offset by 2 white keys where sub-contra octave lives,
     // which we achieve by offsetting the iteration over mask.
-    let start_pos = 2.0 * white_key_step - KEYBOARD_SIZE.x / 2.0 + slot_size / 2.0;
+    let start_pos = 2.0 * WHITE_KEYS_STEP - KEYBOARD_SIZE.x / 2.0 + BLACK_KEYS_SLOT_SIZE / 2.0;
     for i in -3..83 {
         let octave_key = (octave_mask_black.len() as isize + i) as usize % octave_mask_black.len();
         if octave_mask_black[octave_key] {
@@ -141,7 +149,7 @@ fn setup_piano_keys(
                 .spawn(MaterialMesh2dBundle {
                     mesh: black_key_shape.clone().into(),
                     transform: Transform::from_translation(Vec3::new(
-                        start_pos + i as f32 * slot_size,
+                        start_pos + i as f32 * BLACK_KEYS_SLOT_SIZE,
                         // the offset to align keys by the top side
                         (WHITE_KEY_SIZE.y - BLACK_KEY_SIZE.y) / 2.0,
                         // Draw black keys on top of the white
@@ -153,6 +161,35 @@ fn setup_piano_keys(
                 .set_parent(keyboard);
         }
     }
+}
+
+/// Resolve a position on the keyboard (in keyboard coordinates) to a key number 0..88
+fn keyboard_pos_to_key(pos: Vec2) -> Option<u8> {
+    if pos.x.abs() > KEYBOARD_SIZE.x / 2.0 || pos.y.abs() > KEYBOARD_SIZE.y / 2.0 {
+        return None;
+    }
+
+    // The keyboard starts from A0 key in sub-contra octave. Each octave has 7 white keys and 5 black keys.
+    // In lower part of the keyboard only white keys, whilte in the upper part we have white and black keys.
+    let white_and_black = pos.y + KEYBOARD_SIZE.y / 2.0 > WHITE_KEY_SIZE.y - BLACK_KEY_SIZE.y;
+    // For simplicity we offset the position to the imaginary beginning of the sub-contra octave and then find the key
+    let pos = pos.x + KEYBOARD_SIZE.x / 2.0 + 5.0 * WHITE_KEYS_STEP;
+
+    // find the octave and don't forget about the offset by 2 white keys
+    let octave = (pos / (7.0 * WHITE_KEYS_STEP)) as u8;
+    let pos_in_octave = pos - octave as f32 * 7.0 * WHITE_KEYS_STEP;
+
+    // then find a key in the octave
+    let key_in_octave = if white_and_black {
+        (pos_in_octave / BLACK_KEYS_SLOT_SIZE) as u8
+    } else {
+        let white_key_idx = (pos_in_octave / WHITE_KEYS_STEP) as usize;
+        let white_keys_map = [0, 2, 4, 5, 7, 9, 11];
+        white_keys_map[white_key_idx]
+    };
+    // Key was counted with the offset and real piano keyboard misses leading and trailing black keys
+    let key = (key_in_octave + octave * 12).clamp(9, 96) - 9;
+    Some(key)
 }
 
 #[derive(Event)]
@@ -178,21 +215,8 @@ fn piano_keyboard(
             // Check if the cursor is in the keyboard
             for transform in keyboard.iter() {
                 let cursor_pos = cursor_pos - transform.translation.xy();
-                if cursor_pos.x.abs() < KEYBOARD_SIZE.x / 2.0
-                    && cursor_pos.y.abs() < KEYBOARD_SIZE.y / 2.0
-                {
-                    let white_key_idx = ((cursor_pos.x + KEYBOARD_SIZE.x / 2.0)
-                        / (WHITE_KEY_SIZE.x + WHITE_KEYS_SPACE))
-                        as usize;
-
-                    let white_keys_map = [
-                        0, 2, 3, 5, 7, 8, 10, 12, 14, 15, 17, 19, 20, 22, 24, 26, 27, 29, 31, 32,
-                        34, 36, 38, 39, 41, 43, 44, 46, 48, 50, 51, 53, 55, 56, 58, 60, 62, 63, 65,
-                        67, 68, 70, 72, 74, 75, 77, 79, 80, 82, 84, 86, 87,
-                    ];
-                    ev_play_note.send(PlayNote {
-                        key: white_keys_map[white_key_idx],
-                    });
+                if let Some(key) = keyboard_pos_to_key(cursor_pos) {
+                    ev_play_note.send(PlayNote { key });
                 }
             }
 
@@ -403,4 +427,114 @@ fn build_spectrum(source: &FftSource, config: &FftConfig) -> Result<Image> {
     image.data.resize(image.data.capacity(), 0);
 
     Ok(image)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn keyboard_pos_to_key_test() {
+        // Outside the keyboard
+        assert_eq!(
+            keyboard_pos_to_key(-KEYBOARD_SIZE / 2.0 - Vec2::new(0.1, 0.0)),
+            None
+        );
+        assert_eq!(
+            keyboard_pos_to_key(-KEYBOARD_SIZE / 2.0 - Vec2::new(0.0, 0.1)),
+            None
+        );
+        assert_eq!(
+            keyboard_pos_to_key(-KEYBOARD_SIZE / 2.0 - Vec2::new(0.1, 0.1)),
+            None
+        );
+        assert_eq!(
+            keyboard_pos_to_key(KEYBOARD_SIZE / 2.0 + Vec2::new(0.1, 0.0)),
+            None
+        );
+        assert_eq!(
+            keyboard_pos_to_key(KEYBOARD_SIZE / 2.0 + Vec2::new(0.0, 0.1)),
+            None
+        );
+        assert_eq!(
+            keyboard_pos_to_key(KEYBOARD_SIZE / 2.0 + Vec2::new(0.1, 0.1)),
+            None
+        );
+        assert_eq!(
+            keyboard_pos_to_key(Vec2::new(0.0, -KEYBOARD_SIZE.y / 2.0 - 0.1)),
+            None
+        );
+        assert_eq!(
+            keyboard_pos_to_key(Vec2::new(0.0, KEYBOARD_SIZE.y / 2.0 + 0.1)),
+            None
+        );
+        assert_eq!(
+            keyboard_pos_to_key(Vec2::new(KEYBOARD_SIZE.x + 0.1, 0.0)),
+            None
+        );
+        assert_eq!(
+            keyboard_pos_to_key(Vec2::new(-KEYBOARD_SIZE.x - 0.1, 0.0)),
+            None
+        );
+
+        // The first key
+        assert_eq!(keyboard_pos_to_key(-KEYBOARD_SIZE / 2.0), Some(0));
+        assert_eq!(
+            keyboard_pos_to_key(-KEYBOARD_SIZE / 2.0 + Vec2::new(0.0, KEYBOARD_SIZE.y / 2.0)),
+            Some(0)
+        );
+        assert_eq!(
+            keyboard_pos_to_key(-KEYBOARD_SIZE / 2.0 + Vec2::new(0.0, KEYBOARD_SIZE.y)),
+            Some(0)
+        );
+
+        // The last key
+        assert_eq!(keyboard_pos_to_key(KEYBOARD_SIZE / 2.0), Some(87));
+        assert_eq!(
+            keyboard_pos_to_key(KEYBOARD_SIZE / 2.0 - Vec2::new(0.0, KEYBOARD_SIZE.y / 2.0)),
+            Some(87)
+        );
+        assert_eq!(
+            keyboard_pos_to_key(KEYBOARD_SIZE / 2.0 - Vec2::new(0.0, KEYBOARD_SIZE.y)),
+            Some(87)
+        );
+
+        // iterate over white keys jumping by octave at the bottom of the key
+        let white_key_step = WHITE_KEY_SIZE.x + WHITE_KEYS_SPACE;
+        let mut pos = -KEYBOARD_SIZE / 2.0 + Vec2::new(WHITE_KEY_SIZE.x / 2.0, 0.5);
+        for i in 0..8 {
+            assert_eq!(keyboard_pos_to_key(pos), Some(i * 12));
+            pos.x += 7.0 * white_key_step;
+        }
+
+        // iterate over white keys jumping by octave at the middle of the D, G and A keys
+        let mut pos = Vec2::new(
+            -KEYBOARD_SIZE.x / 2.0 + WHITE_KEY_SIZE.x / 2.0 + white_key_step * 3.0,
+            0.0,
+        );
+        for i in 0..7 {
+            assert_eq!(keyboard_pos_to_key(pos), Some(5 + i * 12));
+            assert_eq!(
+                keyboard_pos_to_key(pos + Vec2::new(white_key_step * 3.0, 0.0)),
+                Some(10 + i * 12)
+            );
+            assert_eq!(
+                keyboard_pos_to_key(pos + Vec2::new(white_key_step * 4.0, 0.0)),
+                Some(12 + i * 12)
+            );
+            pos.x += 7.0 * white_key_step;
+        }
+
+        // iterate over all keys, black and white starting from the 1st octave
+        let slot_size = white_key_step * 7.0 / 12.0;
+        let mut pos = Vec2::new(
+            -KEYBOARD_SIZE.x / 2.0 + white_key_step * 2.0 + slot_size / 2.0,
+            0.0,
+        );
+        for i in 0..85 {
+            assert_eq!(keyboard_pos_to_key(pos), Some(3 + i));
+            pos.x += slot_size;
+        }
+    }
 }
