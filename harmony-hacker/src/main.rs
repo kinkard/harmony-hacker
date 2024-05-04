@@ -12,6 +12,7 @@ use realfft::RealFftPlanner;
 use symphonia::core::audio::{AudioBufferRef, Signal};
 
 mod audio;
+mod goertzel;
 
 /// White key dimensions
 const WHITE_KEY_SIZE: Vec2 = Vec2 { x: 23.0, y: 135.0 };
@@ -266,10 +267,17 @@ impl Default for FftSource {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Algorithm {
+    Fft,
+    Goertzel,
+}
+
 #[derive(Resource)]
 struct FftConfig {
     resolution_hz: f32,
     duration_sec: u32,
+    algorithm: Algorithm,
 }
 
 impl Default for FftConfig {
@@ -277,6 +285,7 @@ impl Default for FftConfig {
         Self {
             resolution_hz: 50.0,
             duration_sec: 90,
+            algorithm: Algorithm::Fft,
         }
     }
 }
@@ -342,6 +351,7 @@ fn egui_ui(
 ) {
     let resolution_hz = fft_config.resolution_hz;
     let duration_sec = fft_config.duration_sec;
+    let algorithm = fft_config.algorithm;
 
     egui::Window::new("FFT Config").show(contexts.ctx_mut(), |ui| {
         ui.label(format!("Source: {}", fft_source.name));
@@ -349,9 +359,15 @@ fn egui_ui(
         ui.add(egui::Slider::new(&mut fft_config.resolution_hz, 1.0..=50.0));
         ui.label("Duration (sec):");
         ui.add(egui::Slider::new(&mut fft_config.duration_sec, 1..=120));
+        ui.label("Algorithm:");
+        ui.radio_value(&mut fft_config.algorithm, Algorithm::Fft, "FFT");
+        ui.radio_value(&mut fft_config.algorithm, Algorithm::Goertzel, "Goertzel");
     });
 
-    if resolution_hz != fft_config.resolution_hz || duration_sec != fft_config.duration_sec {
+    if resolution_hz != fft_config.resolution_hz
+        || duration_sec != fft_config.duration_sec
+        || algorithm != fft_config.algorithm
+    {
         ev_update_spectrum.send(UpdateSpectrum);
     }
 }
@@ -365,15 +381,18 @@ fn update_spectrum(
 ) {
     for _ in ev_update_spectrum.read() {
         for mut handle in spectrum_spties.iter_mut() {
-            *handle = build_spectrum(&fft_source, &fft_config)
-                .map(|image| images.add(image))
-                .inspect_err(|err| error!("Failed to build spectrum: {:?}", err))
-                .unwrap_or_default();
+            *handle = match fft_config.algorithm {
+                Algorithm::Fft => build_spectrum_fft(&fft_source, &fft_config),
+                Algorithm::Goertzel => build_spectrum_goertzel(&fft_source, &fft_config),
+            }
+            .map(|image| images.add(image))
+            .inspect_err(|err| error!("Failed to build spectrum: {:?}", err))
+            .unwrap_or_default();
         }
     }
 }
 
-fn build_spectrum(source: &FftSource, config: &FftConfig) -> Result<Image> {
+fn build_spectrum_fft(source: &FftSource, config: &FftConfig) -> Result<Image> {
     let fft_window_size = (source.sample_rate as f32 / config.resolution_hz as f32) as usize;
     info!("FFT window size: {}", fft_window_size);
 
@@ -423,6 +442,65 @@ fn build_spectrum(source: &FftSource, config: &FftConfig) -> Result<Image> {
             let s = (s * 255.0) as u8;
             image.data.push(s);
         }
+    }
+
+    // Fill the rest of the image with zeros
+    image.data.resize(image.data.capacity(), 0);
+
+    Ok(image)
+}
+
+#[inline(never)]
+fn build_spectrum_goertzel(source: &FftSource, config: &FftConfig) -> Result<Image> {
+    let window_size = (source.sample_rate as f32 / config.resolution_hz as f32) as usize;
+    info!("FFT window size: {}", window_size);
+
+    // image related stuff
+    let spectrum_rows = source.sample_rate * config.duration_sec / window_size as u32;
+    let size = Extent3d {
+        width: 88 * 3 + 5,
+        height: spectrum_rows,
+        ..default()
+    };
+    let mut image = Image {
+        data: Vec::with_capacity(size.width as usize * size.height as usize),
+        texture_descriptor: TextureDescriptor {
+            label: None,
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::R8Unorm,
+            usage: TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        ..default()
+    };
+
+    let mut key_states = (0..88)
+        .map(|key| 440.0 * 2.0f64.powf((key as f64 - 48.0) / 12.0) as f32)
+        .map(|frequency| goertzel::Goertzel::new(source.sample_rate, frequency))
+        .collect::<Vec<_>>();
+    for chunk in source.data.chunks(window_size).take(spectrum_rows as usize) {
+        for sample in chunk {
+            for state in key_states.iter_mut() {
+                state.process(*sample)
+            }
+        }
+
+        image.data.push(0);
+        image.data.push(0);
+        for state in key_states.iter_mut() {
+            let s = state.magnitude(window_size as u32);
+            let s = (s.sqrt() * 255.0) as u8;
+            for _ in 0..3 {
+                image.data.push(s);
+            }
+            state.reset();
+        }
+        image.data.push(0);
+        image.data.push(0);
+        image.data.push(0);
     }
 
     // Fill the rest of the image with zeros
