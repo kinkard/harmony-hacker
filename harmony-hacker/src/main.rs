@@ -426,13 +426,8 @@ fn build_spectrum_fft(source: &FftSource, config: &FftConfig) -> Result<Image> {
     };
 
     let samples = &source.data[config.offset_sec as usize * source.sample_rate as usize..];
-    for row in 0..spectrum_rows as usize {
-        let start = row * fft_window_size;
-        if start + fft_window_size > samples.len() {
-            break;
-        }
-        input_buf.copy_from_slice(&samples[start..start + fft_window_size]);
-
+    for chunk in samples.chunks(fft_window_size).take(spectrum_rows as usize) {
+        input_buf.copy_from_slice(chunk);
         r2c.process_with_scratch(&mut input_buf, &mut output_buf, &mut scratch_buf)
             .unwrap();
         for value in output_buf.iter().take(bins_to_take as usize) {
