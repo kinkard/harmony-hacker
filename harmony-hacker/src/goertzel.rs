@@ -1,7 +1,7 @@
 //! Minimalistic implementation of the Goertzel algorithm.
 //! https://en.wikipedia.org/wiki/Goertzel_algorithm
 
-/// Stateless Goertzel algorithm
+/// A helper function to calculate the magnitude of the signal at the target frequency in a single call.
 /// Example:
 /// ```
 /// // check the sine wave with the target frequency
@@ -21,24 +21,11 @@
 /// ```
 #[allow(dead_code)]
 pub(crate) fn goertzel(samples: &[f32], sample_rate: u32, target_frequency: f32) -> f32 {
-    let k = target_frequency / sample_rate as f32;
-    let w = 2.0 * std::f32::consts::PI * k;
-    let coeff = 2.0 * w.cos();
-
-    let mut q0;
-    let mut q1 = 0.0f32;
-    let mut q2 = 0.0f32;
-
-    // s[n] = x[n] + 2 * cos(2 * pi * k) * s[n-1] - s[n-2]
+    let mut goertzel = Goertzel::new(sample_rate, target_frequency);
     for sample in samples {
-        q0 = sample + coeff * q1 - q2;
-        q2 = q1;
-        q1 = q0;
+        goertzel.process(*sample);
     }
-
-    let magnitude = ((q1 * q1) + (q2 * q2) - (q1 * q2 * coeff)).sqrt();
-    let normalized_magnitude = 2.0 * magnitude / samples.len() as f32;
-    normalized_magnitude
+    goertzel.magnitude(samples.len() as u32)
 }
 
 /// Stateful Goertzel algorithm. Might be orders of magnitude faster when multiple filters are needed.
