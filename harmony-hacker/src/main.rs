@@ -13,6 +13,7 @@ use symphonia::core::audio::{AudioBufferRef, Signal};
 
 mod audio;
 mod goertzel;
+mod window_fn;
 
 /// White key dimensions
 const WHITE_KEY_SIZE: Vec2 = Vec2 { x: 23.0, y: 135.0 };
@@ -273,12 +274,20 @@ enum Algorithm {
     Goertzel,
 }
 
+#[derive(Clone, Copy, Default, PartialEq)]
+enum WindowFunction {
+    #[default]
+    None,
+    Hann,
+}
+
 #[derive(Clone, PartialEq, Resource)]
 struct FftConfig {
     resolution_hz: f32,
     duration_sec: u32,
     offset_sec: u32,
     algorithm: Algorithm,
+    window_function: WindowFunction,
 }
 
 impl Default for FftConfig {
@@ -288,6 +297,7 @@ impl Default for FftConfig {
             duration_sec: 90,
             offset_sec: 0,
             algorithm: Algorithm::Goertzel,
+            window_function: Default::default(),
         }
     }
 }
@@ -347,26 +357,29 @@ fn file_drop(
 
 fn egui_ui(
     mut contexts: EguiContexts,
-    mut fft_config: ResMut<FftConfig>,
-    fft_source: Res<FftSource>,
+    mut config: ResMut<FftConfig>,
+    source: Res<FftSource>,
     mut ev_update_spectrum: EventWriter<UpdateSpectrum>,
 ) {
-    let prev = fft_config.clone();
+    let prev = config.clone();
 
     egui::Window::new("FFT Config").show(contexts.ctx_mut(), |ui| {
-        ui.label(format!("Source: {}", fft_source.name));
+        ui.label(format!("Source: {}", source.name));
         ui.label("Resolution (Hz):");
-        ui.add(egui::Slider::new(&mut fft_config.resolution_hz, 1.0..=50.0));
+        ui.add(egui::Slider::new(&mut config.resolution_hz, 1.0..=50.0));
         ui.label("Duration (sec):");
-        ui.add(egui::Slider::new(&mut fft_config.duration_sec, 1..=120));
+        ui.add(egui::Slider::new(&mut config.duration_sec, 1..=120));
         ui.label("Offset (sec):");
-        ui.add(egui::Slider::new(&mut fft_config.offset_sec, 0..=90));
+        ui.add(egui::Slider::new(&mut config.offset_sec, 0..=90));
         ui.label("Algorithm:");
-        ui.radio_value(&mut fft_config.algorithm, Algorithm::Fft, "FFT");
-        ui.radio_value(&mut fft_config.algorithm, Algorithm::Goertzel, "Goertzel");
+        ui.radio_value(&mut config.algorithm, Algorithm::Fft, "FFT");
+        ui.radio_value(&mut config.algorithm, Algorithm::Goertzel, "Goertzel");
+        ui.label("Window Function:");
+        ui.radio_value(&mut config.window_function, WindowFunction::None, "None");
+        ui.radio_value(&mut config.window_function, WindowFunction::Hann, "Hann");
     });
 
-    if prev != *fft_config {
+    if prev != *config {
         ev_update_spectrum.send(UpdateSpectrum);
     }
 }
@@ -392,19 +405,19 @@ fn update_spectrum(
 }
 
 fn build_spectrum_fft(source: &FftSource, config: &FftConfig) -> Result<Image> {
-    let fft_window_size = (source.sample_rate as f32 / config.resolution_hz as f32) as usize;
-    info!("FFT window size: {}", fft_window_size);
+    let window_size = (source.sample_rate as f32 / config.resolution_hz as f32) as usize;
+    info!("FFT window size: {}", window_size);
 
     let mut real_planner = RealFftPlanner::<f32>::new();
-    let r2c = real_planner.plan_fft_forward(fft_window_size);
+    let r2c = real_planner.plan_fft_forward(window_size);
     // let mut input_buf = Vec::<f32>::with_capacity(fft_window_size);
     let mut input_buf = r2c.make_input_vec();
     let mut output_buf = r2c.make_output_vec();
     let mut scratch_buf = r2c.make_scratch_vec();
 
     // image related stuff
-    let bins_to_take = 1 + (MAX_FREQ / source.sample_rate as f32 * fft_window_size as f32) as u32;
-    let spectrum_rows = source.sample_rate * config.duration_sec / fft_window_size as u32;
+    let bins_to_take = 1 + (MAX_FREQ / source.sample_rate as f32 * window_size as f32) as u32;
+    let spectrum_rows = source.sample_rate * config.duration_sec / window_size as u32;
     let size = Extent3d {
         width: bins_to_take,
         height: spectrum_rows,
@@ -425,9 +438,18 @@ fn build_spectrum_fft(source: &FftSource, config: &FftConfig) -> Result<Image> {
         ..default()
     };
 
+    let window = match config.window_function {
+        WindowFunction::None => vec![1.0; window_size],
+        WindowFunction::Hann => window_fn::hann(window_size),
+    };
+
     let samples = &source.data[config.offset_sec as usize * source.sample_rate as usize..];
-    for chunk in samples.chunks(fft_window_size).take(spectrum_rows as usize) {
+    for chunk in samples.chunks(window_size).take(spectrum_rows as usize) {
         input_buf.copy_from_slice(chunk);
+        for (sample, window) in input_buf.iter_mut().zip(&window) {
+            *sample *= *window;
+        }
+
         r2c.process_with_scratch(&mut input_buf, &mut output_buf, &mut scratch_buf)
             .unwrap();
         for value in output_buf.iter().take(bins_to_take as usize) {
@@ -471,15 +493,20 @@ fn build_spectrum_goertzel(source: &FftSource, config: &FftConfig) -> Result<Ima
         ..default()
     };
 
+    let window = match config.window_function {
+        WindowFunction::None => vec![1.0; window_size],
+        WindowFunction::Hann => window_fn::hann(window_size),
+    };
+
     let mut key_states = (0..88)
         .map(|key| 440.0 * 2.0f64.powf((key as f64 - 48.0) / 12.0) as f32)
         .map(|frequency| goertzel::Goertzel::new(source.sample_rate, frequency))
         .collect::<Vec<_>>();
     let samples = &source.data[config.offset_sec as usize * source.sample_rate as usize..];
     for chunk in samples.chunks(window_size).take(spectrum_rows as usize) {
-        for sample in chunk {
+        for sample in chunk.iter().zip(&window).map(|(s, w)| s * w) {
             for state in key_states.iter_mut() {
-                state.process(*sample)
+                state.process(sample)
             }
         }
 
