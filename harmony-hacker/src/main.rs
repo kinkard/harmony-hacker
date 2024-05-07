@@ -488,7 +488,7 @@ fn build_spectrum_goertzel(source: &FftSource, config: &FftConfig) -> Result<Ima
         image.data.push(0);
         for state in key_states.iter_mut() {
             let s = state.magnitude(window_size as u32);
-            let s = (s.sqrt() * 255.0) as u8;
+            let s = (s * 255.0) as u8;
             for _ in 0..3 {
                 image.data.push(s);
             }
