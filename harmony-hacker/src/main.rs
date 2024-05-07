@@ -445,7 +445,6 @@ fn build_spectrum_fft(source: &FftSource, config: &FftConfig) -> Result<Image> {
     Ok(image)
 }
 
-#[inline(never)]
 fn build_spectrum_goertzel(source: &FftSource, config: &FftConfig) -> Result<Image> {
     let window_size = (source.sample_rate as f32 / config.resolution_hz as f32) as usize;
     info!("FFT window size: {}", window_size);
