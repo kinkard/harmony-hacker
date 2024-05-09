@@ -1,3 +1,4 @@
+use self::overlap_chunks::OverlapChunksExt;
 use anyhow::Result;
 use bevy::{
     prelude::*,
@@ -13,6 +14,7 @@ use symphonia::core::audio::{AudioBufferRef, Signal};
 
 mod audio;
 mod goertzel;
+mod overlap_chunks;
 mod window_fn;
 
 /// White key dimensions
@@ -281,6 +283,13 @@ enum WindowFunction {
     Hann,
 }
 
+#[derive(Clone, Copy, Default, PartialEq)]
+enum Overlapping {
+    #[default]
+    None,
+    P50,
+}
+
 #[derive(Clone, PartialEq, Resource)]
 struct FftConfig {
     resolution_hz: f32,
@@ -288,6 +297,7 @@ struct FftConfig {
     offset_sec: u32,
     algorithm: Algorithm,
     window_function: WindowFunction,
+    overlapping: Overlapping,
 }
 
 impl Default for FftConfig {
@@ -298,6 +308,7 @@ impl Default for FftConfig {
             offset_sec: 0,
             algorithm: Algorithm::Goertzel,
             window_function: Default::default(),
+            overlapping: Default::default(),
         }
     }
 }
@@ -377,6 +388,9 @@ fn egui_ui(
         ui.label("Window Function:");
         ui.radio_value(&mut config.window_function, WindowFunction::None, "None");
         ui.radio_value(&mut config.window_function, WindowFunction::Hann, "Hann");
+        ui.label("Overlapping:");
+        ui.radio_value(&mut config.overlapping, Overlapping::None, "None");
+        ui.radio_value(&mut config.overlapping, Overlapping::P50, "50%");
     });
 
     if prev != *config {
@@ -415,9 +429,14 @@ fn build_spectrum_fft(source: &FftSource, config: &FftConfig) -> Result<Image> {
     let mut output_buf = r2c.make_output_vec();
     let mut scratch_buf = r2c.make_scratch_vec();
 
+    let spectrum_rows = source.sample_rate * config.duration_sec / window_size as u32;
+    let (overlapping, spectrum_rows) = match config.overlapping {
+        Overlapping::None => (0, spectrum_rows),
+        Overlapping::P50 => (window_size / 2, spectrum_rows * 2 - 1),
+    };
+
     // image related stuff
     let bins_to_take = 1 + (MAX_FREQ / source.sample_rate as f32 * window_size as f32) as u32;
-    let spectrum_rows = source.sample_rate * config.duration_sec / window_size as u32;
     let size = Extent3d {
         width: bins_to_take,
         height: spectrum_rows,
@@ -443,8 +462,12 @@ fn build_spectrum_fft(source: &FftSource, config: &FftConfig) -> Result<Image> {
         WindowFunction::Hann => window_fn::hann(window_size),
     };
 
-    let samples = &source.data[config.offset_sec as usize * source.sample_rate as usize..];
-    for chunk in samples.chunks(window_size).take(spectrum_rows as usize) {
+    let offset = source
+        .data
+        .len()
+        .min((config.offset_sec * source.sample_rate) as usize);
+    let chunks = source.data[offset..].overlap_chunks(window_size, overlapping);
+    for chunk in chunks.take(spectrum_rows as usize) {
         input_buf.copy_from_slice(chunk);
         for (sample, window) in input_buf.iter_mut().zip(&window) {
             *sample *= *window;
@@ -469,10 +492,15 @@ fn build_spectrum_fft(source: &FftSource, config: &FftConfig) -> Result<Image> {
 
 fn build_spectrum_goertzel(source: &FftSource, config: &FftConfig) -> Result<Image> {
     let window_size = (source.sample_rate as f32 / config.resolution_hz as f32) as usize;
-    info!("FFT window size: {}", window_size);
+    info!("Goertzel window size: {}", window_size);
+
+    let spectrum_rows = source.sample_rate * config.duration_sec / window_size as u32;
+    let (overlapping, spectrum_rows) = match config.overlapping {
+        Overlapping::None => (0, spectrum_rows),
+        Overlapping::P50 => (window_size / 2, spectrum_rows * 2 - 1),
+    };
 
     // image related stuff
-    let spectrum_rows = source.sample_rate * config.duration_sec / window_size as u32;
     let size = Extent3d {
         width: 88 * 3 + 5,
         height: spectrum_rows,
@@ -502,8 +530,12 @@ fn build_spectrum_goertzel(source: &FftSource, config: &FftConfig) -> Result<Ima
         .map(|key| 440.0 * 2.0f64.powf((key as f64 - 48.0) / 12.0) as f32)
         .map(|frequency| goertzel::Goertzel::new(source.sample_rate, frequency))
         .collect::<Vec<_>>();
-    let samples = &source.data[config.offset_sec as usize * source.sample_rate as usize..];
-    for chunk in samples.chunks(window_size).take(spectrum_rows as usize) {
+    let offset = source
+        .data
+        .len()
+        .min((config.offset_sec * source.sample_rate) as usize);
+    let chunks = source.data[offset..].overlap_chunks(window_size, overlapping);
+    for chunk in chunks.take(spectrum_rows as usize) {
         for sample in chunk.iter().zip(&window).map(|(s, w)| s * w) {
             for state in key_states.iter_mut() {
                 state.process(sample)
