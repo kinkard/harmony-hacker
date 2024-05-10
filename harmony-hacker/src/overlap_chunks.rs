@@ -53,7 +53,7 @@ impl<'a, T> Iterator for OverlapChunks<'a, T> {
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         if self.v.is_empty() {
-            return (0, Some(0));
+            (0, Some(0))
         } else {
             let overlapped = self.v.len().saturating_sub(self.chunk_size);
             let full_chunks = overlapped / (self.next_chunk_offset);

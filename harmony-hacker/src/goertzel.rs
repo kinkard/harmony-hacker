@@ -91,8 +91,8 @@ impl Goertzel {
     pub(crate) fn magnitude(&self, block_size: u32) -> f32 {
         let magnitude =
             ((self.q1 * self.q1) + (self.q2 * self.q2) - (self.q1 * self.q2 * self.coeff)).sqrt();
-        let normalized_magnitude = 2.0 * magnitude / block_size as f32;
-        normalized_magnitude
+        // normalize the magnitude
+        2.0 * magnitude / block_size as f32
     }
 
     /// Reset the filter's state

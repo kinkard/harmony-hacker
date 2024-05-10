@@ -349,7 +349,7 @@ fn file_drop(
                             return;
                         };
 
-                        if fft_source.data.len() + audio_buf.frames() as usize > samples_to_take {
+                        if fft_source.data.len() + audio_buf.frames() > samples_to_take {
                             break;
                         }
 
@@ -419,7 +419,7 @@ fn update_spectrum(
 }
 
 fn build_spectrum_fft(source: &FftSource, config: &FftConfig) -> Result<Image> {
-    let window_size = (source.sample_rate as f32 / config.resolution_hz as f32) as usize;
+    let window_size = (source.sample_rate as f32 / config.resolution_hz) as usize;
     info!("FFT window size: {}", window_size);
 
     let mut real_planner = RealFftPlanner::<f32>::new();
@@ -491,7 +491,7 @@ fn build_spectrum_fft(source: &FftSource, config: &FftConfig) -> Result<Image> {
 }
 
 fn build_spectrum_goertzel(source: &FftSource, config: &FftConfig) -> Result<Image> {
-    let window_size = (source.sample_rate as f32 / config.resolution_hz as f32) as usize;
+    let window_size = (source.sample_rate as f32 / config.resolution_hz) as usize;
     info!("Goertzel window size: {}", window_size);
 
     let spectrum_rows = source.sample_rate * config.duration_sec / window_size as u32;
